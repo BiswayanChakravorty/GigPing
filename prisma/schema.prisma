@@ -1,0 +1,237 @@
+// GigPing Prisma Schema
+// Database: Supabase PostgreSQL
+// Instant job pings & 1-click AI pitches for freelance copywriters
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum SubscriptionTier {
+  FREE
+  PRO
+  AGENCY
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  TRIALING
+}
+
+enum PlatformChannel {
+  X_TWITTER
+  LINKEDIN
+  UPWORK
+  CONTRA
+  WELLFOUND
+}
+
+enum MatchGrade {
+  GOLD
+  SILVER
+  BRONZE
+}
+
+model User {
+  id                        String              @id @default(uuid())
+  email                     String              @unique
+  fullName                  String?
+  avatarUrl                 String?
+  createdAt                 DateTime            @default(now())
+  updatedAt                 DateTime            @updatedAt
+  
+  // Quota tracking
+  weeklyQuotaLimit          Int                 @default(3) // 3 for Free, 100 for Pro, 999999 for Agency
+  notificationsSentThisWeek Int                 @default(0)
+  quotaResetDate            DateTime            @default(now())
+  
+  // Freelancer Profile & Notification Settings
+  bio                       String?
+  portfolioUrl              String?
+  targetHourlyRate          Int?                @default(75)
+  minimumProjectBudget      Int?                @default(500)
+  deliveryEmail             String?
+  deliveryWhatsApp          String?
+  instantAlertsEnabled      Boolean             @default(true)
+  
+  // Relations
+  subscription              Subscription?
+  specializations           UserSpecialization[]
+  platformSettings          UserPlatformSetting[]
+  receivedAlerts            JobAlertRecipient[]
+  savedJobs                 SavedJob[]
+  customPitchTemplates      PitchTemplate[]
+
+  @@map("users")
+}
+
+model Subscription {
+  id                    String              @id @default(uuid())
+  userId                String              @unique
+  user                  User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  tier                  SubscriptionTier    @default(FREE)
+  status                SubscriptionStatus  @default(ACTIVE)
+  
+  // Payment Provider Details (Dodo Payments / Lemon Squeezy MoR)
+  provider              String              @default("dodo_payments") // "dodo_payments" | "lemonsqueezy"
+  providerCustomerId    String?
+  providerSubscriptionId String?            @unique
+  currentPeriodStart    DateTime            @default(now())
+  currentPeriodEnd      DateTime
+  cancelAtPeriodEnd     Boolean             @default(false)
+  
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  @@map("subscriptions")
+}
+
+model Specialization {
+  id          String               @id @default(uuid())
+  slug        String               @unique // e.g. "email-whatsapp", "conversion-copywriter"
+  name        String               // e.g. "Email & WhatsApp Marketing Copywriter"
+  description String
+  keywords    String[]             // Keywords monitored by AI Matcher
+  icon        String               @default("Mail")
+  
+  users       UserSpecialization[]
+  jobs        JobAlertSpecialization[]
+
+  @@map("specializations")
+}
+
+model UserSpecialization {
+  id               String         @id @default(uuid())
+  userId           String
+  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  specializationId String
+  specialization   Specialization @relation(fields: [specializationId], references: [id], onDelete: Cascade)
+  isPrimary        Boolean        @default(false)
+  
+  createdAt        DateTime       @default(now())
+
+  @@unique([userId, specializationId])
+  @@map("user_specializations")
+}
+
+model UserPlatformSetting {
+  id          String          @id @default(uuid())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  platform    PlatformChannel
+  isEnabled   Boolean         @default(true)
+
+  @@unique([userId, platform])
+  @@map("user_platform_settings")
+}
+
+model JobAlert {
+  id                  String                   @id @default(uuid())
+  externalId          String                   @unique // e.g. "tw-18492048", "upwork-~019349"
+  platform            PlatformChannel
+  platformPostUrl     String
+  
+  clientName          String?
+  clientUsername      String?
+  clientVerified      Boolean                  @default(false)
+  clientSpendScore    Int?                     @default(0) // 0-100 rating
+  
+  title               String
+  rawContent          String
+  summary             String
+  
+  budgetType          String                   @default("FIXED") // "FIXED" | "HOURLY" | "ESTIMATED"
+  budgetMin           Int?
+  budgetMax           Int?
+  currency            String                   @default("USD")
+  
+  keywordsDetected    String[]
+  matchScore          Int                      @default(50) // 0-100
+  matchGrade          MatchGrade               @default(SILVER)
+  
+  detectedAt          DateTime                 @default(now())
+  expiresAt           DateTime?
+  
+  // Relations
+  specializations     JobAlertSpecialization[]
+  recipients          JobAlertRecipient[]
+  savedBy             SavedJob[]
+
+  @@index([platform, detectedAt])
+  @@index([matchGrade])
+  @@map("job_alerts")
+}
+
+model JobAlertSpecialization {
+  id               String         @id @default(uuid())
+  jobAlertId       String
+  jobAlert         JobAlert       @relation(fields: [jobAlertId], references: [id], onDelete: Cascade)
+  specializationId String
+  specialization   Specialization @relation(fields: [specializationId], references: [id], onDelete: Cascade)
+
+  @@unique([jobAlertId, specializationId])
+  @@map("job_alert_specializations")
+}
+
+model JobAlertRecipient {
+  id               String    @id @default(uuid())
+  jobAlertId       String
+  jobAlert         JobAlert  @relation(fields: [jobAlertId], references: [id], onDelete: Cascade)
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  matchScore       Int       // Individual calculated match score for this user
+  isGoldMatch      Boolean   @default(false)
+  
+  // AI Pitch generated for this user
+  generatedPitch   String
+  pitchAngles      Json?     // Object with 3 angles: direct, audit, case_study
+  
+  // Delivery status via Resend
+  emailSentAt      DateTime?
+  resendMessageId  String?
+  deliveryStatus   String    @default("DELIVERED") // "PENDING" | "DELIVERED" | "QUOTA_EXCEEDED" | "FAILED"
+  openedAt         DateTime?
+  clickedAt        DateTime?
+  
+  createdAt        DateTime  @default(now())
+
+  @@unique([jobAlertId, userId])
+  @@index([userId, createdAt])
+  @@map("job_alert_recipients")
+}
+
+model SavedJob {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobAlertId String
+  jobAlert   JobAlert  @relation(fields: [jobAlertId], references: [id], onDelete: Cascade)
+  notes      String?
+  savedAt    DateTime  @default(now())
+
+  @@unique([userId, jobAlertId])
+  @@map("saved_jobs")
+}
+
+model PitchTemplate {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  tone      String   @default("Direct & Punchy")
+  content   String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("pitch_templates")
+}

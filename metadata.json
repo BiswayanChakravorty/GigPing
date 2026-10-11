@@ -1,0 +1,6 @@
+{
+  "name": "GigPing — Instant Job Pings & 1-Click AI Pitches",
+  "description": "GigPing monitors hiring requests across X, LinkedIn, Upwork, Contra, and Wellfound with AI Match & Quality Scoring and 1-click tailored proposals.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
